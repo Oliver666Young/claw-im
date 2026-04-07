@@ -3,7 +3,7 @@ export const CLAWD_HOST = '127.0.0.1';
 export const CLAWD_BASE_URL = `http://${CLAWD_HOST}:${CLAWD_PORT}`;
 export const CLAWD_IPC_PATH = '/tmp/clawd.sock';
 
-export const CLOUD_DEFAULT_URL = 'wss://claw.bauhinia.ai';
+export const CLOUD_DEFAULT_URL = 'wss://claw-im-production.up.railway.app';
 export const CLOUD_HTTP_PORT = 3820;
 
 export const CONFIG_DIR = `${process.env.HOME}/.claw-im`;
