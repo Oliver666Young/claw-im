@@ -59,6 +59,7 @@ export class ClawDaemon {
       messageQueue: this.messageQueue,
       contactDB: this.contactDB,
       messageRouter: this.messageRouter,
+      hookServer: this.hookServer,
       agentId: this.config.agentId,
       auditLog: this.config.safety.auditLog,
     });
@@ -134,6 +135,7 @@ export class ClawDaemon {
 
       case 'new_message':
         this.messageRouter.routeMessage(msg.message);
+        this.hookServer.addRecentMessage(msg.message, 'inbound');
         break;
 
       case 'message_ack':
@@ -147,6 +149,7 @@ export class ClawDaemon {
       case 'sync_response':
         for (const message of msg.messages) {
           this.messageRouter.routeMessage(message);
+          this.hookServer.addRecentMessage(message, 'inbound');
         }
         break;
 

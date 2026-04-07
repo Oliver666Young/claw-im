@@ -6,6 +6,7 @@ import type { CloudClient } from './cloud-client.js';
 import type { MessageQueue } from './message-queue.js';
 import type { ContactDB } from './contact-db.js';
 import type { MessageRouter } from './message-router.js';
+import type { HookServer } from './hook-server.js';
 import { RateLimiter } from './rate-limiter.js';
 import { filterMessage } from './outbound-filter.js';
 
@@ -23,6 +24,7 @@ export class McpToolHandler {
   private messageQueue: MessageQueue;
   private contactDB: ContactDB;
   private messageRouter: MessageRouter;
+  private hookServer?: HookServer;
   private agentId: string;
   private rateLimiter = new RateLimiter();
   private auditLog: boolean;
@@ -32,6 +34,7 @@ export class McpToolHandler {
     messageQueue: MessageQueue;
     contactDB: ContactDB;
     messageRouter: MessageRouter;
+    hookServer?: HookServer;
     agentId: string;
     auditLog?: boolean;
   }) {
@@ -39,6 +42,7 @@ export class McpToolHandler {
     this.messageQueue = deps.messageQueue;
     this.contactDB = deps.contactDB;
     this.messageRouter = deps.messageRouter;
+    this.hookServer = deps.hookServer;
     this.agentId = deps.agentId;
     this.auditLog = deps.auditLog ?? false;
   }
@@ -119,6 +123,21 @@ export class McpToolHandler {
         metadata: { urgent },
         requestId,
       });
+
+      // Track outbound message in dashboard
+      if (this.hookServer) {
+        this.hookServer.addRecentMessage(
+          {
+            id: requestId,
+            from: this.agentId,
+            to,
+            content: finalContent,
+            metadata: { urgent },
+            timestamp: new Date().toISOString(),
+          },
+          'outbound'
+        );
+      }
 
       // Audit log
       this._writeAuditLog(to, finalContent, tier, !!filterResult.sanitized);

@@ -10,6 +10,7 @@ import { CLAWD_HOST, CLAWD_PORT } from '@claw-im/shared';
 import type { SessionRegistry } from './session-registry.js';
 import type { MessageQueue } from './message-queue.js';
 import type { ContactDB } from './contact-db.js';
+import { DASHBOARD_HTML } from './dashboard.js';
 
 function escapeXml(s: string): string {
   return s
@@ -40,6 +41,16 @@ interface PendingInterrupt {
   tier: Tier;
 }
 
+interface RecentMessageEntry {
+  id: string;
+  from: string;
+  to: string;
+  content: string;
+  timestamp: string;
+  direction: 'inbound' | 'outbound';
+  urgent?: boolean;
+}
+
 export class HookServer {
   private server: FastifyInstance;
   private sessionRegistry: SessionRegistry;
@@ -49,6 +60,10 @@ export class HookServer {
   private agentId: string;
   private pendingInterrupts: PendingInterrupt[] = [];
   private digestSummary: string | null = null;
+  private recentMessages: RecentMessageEntry[] = [];
+  private sentToday = 0;
+  private receivedToday = 0;
+  private todayDateStr: string;
 
   constructor(
     sessionRegistry: SessionRegistry,
@@ -61,6 +76,7 @@ export class HookServer {
     this.contactDB = contactDB;
     this.handle = identity.handle;
     this.agentId = identity.agentId;
+    this.todayDateStr = new Date().toISOString().slice(0, 10);
 
     this.server = Fastify({ logger: false });
     this._registerRoutes();
@@ -76,7 +92,88 @@ export class HookServer {
     this.digestSummary = summary;
   }
 
+  addRecentMessage(msg: Message, direction: 'inbound' | 'outbound'): void {
+    this._resetDailyCountersIfNeeded();
+
+    this.recentMessages.push({
+      id: msg.id,
+      from: msg.from,
+      to: msg.to,
+      content: msg.content,
+      timestamp: msg.timestamp,
+      direction,
+      urgent: msg.metadata.urgent,
+    });
+
+    // Keep only last 100
+    if (this.recentMessages.length > 100) {
+      this.recentMessages = this.recentMessages.slice(-100);
+    }
+
+    if (direction === 'inbound') {
+      this.receivedToday++;
+    } else {
+      this.sentToday++;
+    }
+  }
+
+  private _resetDailyCountersIfNeeded(): void {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== this.todayDateStr) {
+      this.todayDateStr = today;
+      this.sentToday = 0;
+      this.receivedToday = 0;
+    }
+  }
+
   private _registerRoutes(): void {
+    // Dashboard HTML
+    this.server.get('/', async (_request, reply) => {
+      reply.type('text/html').send(DASHBOARD_HTML);
+    });
+
+    // Dashboard API
+    this.server.get('/api/dashboard', async () => {
+      this._resetDailyCountersIfNeeded();
+
+      const contacts = this.contactDB.listContacts();
+      const activeSessions = this.sessionRegistry.getActive();
+      const unread =
+        this.messageQueue.getPendingCount() + this.pendingInterrupts.length;
+
+      const contactList = contacts.map((c) => ({
+        agentId: c.agentId,
+        displayName: c.displayName || c.alias || c.agentId,
+        handle: c.agentId,
+        tier: c.tier,
+        lastMessageAt: c.lastMessageAt ?? null,
+        unreadCount: 0, // Per-contact unread not tracked separately
+        online: false, // We don't track per-contact online status locally
+      }));
+
+      return {
+        agent: {
+          handle: this.handle,
+          agentId: this.agentId,
+          status: 'online' as const,
+        },
+        stats: {
+          unread,
+          totalContacts: contacts.length,
+          onlineContacts: 0,
+          messagesSentToday: this.sentToday,
+          messagesReceivedToday: this.receivedToday,
+        },
+        contacts: contactList,
+        recentMessages: this.recentMessages.slice(-50),
+        activeSessions: activeSessions.map((s) => ({
+          sessionId: s.sessionId,
+          cwd: s.cwd,
+          lastActivity: s.lastActivity,
+        })),
+      };
+    });
+
     this.server.post<{ Body: PostToolUseHookInput }>(
       '/hook/post-tool-use',
       async (request) => {
@@ -103,7 +200,7 @@ export class HookServer {
           const senders = this.messageQueue.getUniqueSenders();
           const senderList = senders.join(', ');
           const output: PostToolUseHookOutput = {
-            additionalContext: `📬 ${pendingCount} new message(s) (from ${senderList})`,
+            additionalContext: `\u{1F4EC} ${pendingCount} new message(s) (from ${senderList})`,
           };
           return output;
         }
@@ -145,6 +242,7 @@ export class HookServer {
   async start(): Promise<void> {
     await this.server.listen({ host: CLAWD_HOST, port: CLAWD_PORT });
     console.log(`[hook-server] Listening on ${CLAWD_HOST}:${CLAWD_PORT}`);
+    console.log(`[hook-server] Dashboard: http://${CLAWD_HOST}:${CLAWD_PORT}/`);
   }
 
   async stop(): Promise<void> {
