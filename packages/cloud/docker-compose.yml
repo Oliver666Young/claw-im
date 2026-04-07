@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: claw
+      POSTGRES_PASSWORD: claw
+      POSTGRES_DB: claw
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claw -d claw"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  cloud:
+    build:
+      context: ../..
+      dockerfile: packages/cloud/Dockerfile
+    ports:
+      - "3820:3820"
+    environment:
+      DATABASE_URL: postgres://claw:claw@postgres:5432/claw
+      PORT: "3820"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,17 @@
+{
+  "name": "claw-im",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "clean": "turbo clean",
+    "typecheck": "turbo typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  }
+}
