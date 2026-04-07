@@ -207,6 +207,24 @@ export function registerWsHandler(app: FastifyInstance, db: Db): void {
 
 // ─── Handler helpers ──────────────────────────────────────
 
+// UUID v4 pattern
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Resolve a handle or UUID to { id, handle }. Returns null if not found.
+async function resolveAgent(db: Db, identifier: string): Promise<{ id: string; handle: string; displayName: string } | null> {
+  if (UUID_RE.test(identifier)) {
+    const [row] = await db.select().from(agents).where(eq(agents.id, identifier)).limit(1);
+    return row ? { id: row.id, handle: row.handle, displayName: row.displayName ?? row.handle } : null;
+  }
+  // Try as handle (with or without @ prefix)
+  const handle = identifier.startsWith('@') ? identifier.slice(1) : identifier;
+  const [row] = await db.select().from(agents).where(eq(agents.handle, handle)).limit(1);
+  if (row) return { id: row.id, handle: row.handle, displayName: row.displayName ?? row.handle };
+  // Also try with the original string as-is
+  const [row2] = await db.select().from(agents).where(eq(agents.handle, identifier)).limit(1);
+  return row2 ? { id: row2.id, handle: row2.handle, displayName: row2.displayName ?? row2.handle } : null;
+}
+
 async function handleSendMessage(
   db: Db,
   fromId: string,
@@ -227,11 +245,30 @@ async function handleSendMessage(
     return;
   }
 
+  // Resolve sender and recipient (handle → UUID)
+  const sender = await resolveAgent(db, fromId);
+  const recipient = await resolveAgent(db, msg.to);
+
+  if (!recipient) {
+    const ack: WsMessageAck = {
+      type: 'message_ack',
+      messageId: '',
+      requestId: msg.requestId,
+      status: 'error',
+      error: `Agent not found: ${msg.to}`,
+    };
+    sendJson(ack);
+    return;
+  }
+
+  const resolvedFromId = sender?.id ?? fromId;
+  const resolvedToId = recipient.id;
+
   // Check if recipient has sender blocked
   const [blockRecord] = await db
     .select()
     .from(contacts)
-    .where(and(eq(contacts.ownerId, msg.to), eq(contacts.contactId, fromId), eq(contacts.blocked, true)))
+    .where(and(eq(contacts.ownerId, resolvedToId), eq(contacts.contactId, resolvedFromId), eq(contacts.blocked, true)))
     .limit(1);
 
   if (blockRecord) {
@@ -248,32 +285,32 @@ async function handleSendMessage(
 
   const messageId = crypto.randomUUID();
 
-  // Store in DB
+  // Store in DB (always use UUIDs)
   const [inserted] = await db
     .insert(messages)
     .values({
       id: messageId,
-      fromId,
-      toId: msg.to,
+      fromId: resolvedFromId,
+      toId: resolvedToId,
       content: msg.content,
       metadata: msg.metadata ?? {},
       delivered: false,
     })
     .returning();
 
-  // Build the message object for delivery
+  // Build the message object for delivery — use handles so daemon can identify
   const fullMessage: Message = {
     id: messageId,
-    from: fromId,
-    to: msg.to,
+    from: sender?.handle ?? fromId,
+    to: recipient.handle,
     content: msg.content,
     metadata: msg.metadata ?? {},
     timestamp: inserted.createdAt!.toISOString(),
   };
 
-  // Try to deliver via broker
+  // Try to deliver via broker (broker uses UUID keys)
   const newMsg: WsNewMessage = { type: 'new_message', message: fullMessage };
-  const delivered = broker.send(msg.to, newMsg);
+  const delivered = broker.send(resolvedToId, newMsg);
 
   if (delivered) {
     // Mark as delivered in DB
@@ -282,7 +319,7 @@ async function handleSendMessage(
       .set({ delivered: true })
       .where(eq(messages.id, messageId));
 
-    log?.info({ messageId, from: fromId, to: msg.to, status: 'delivered' }, 'message sent');
+    log?.info({ messageId, from: resolvedFromId, to: resolvedToId, status: 'delivered' }, 'message sent');
     const ack: WsMessageAck = {
       type: 'message_ack',
       messageId,
@@ -291,7 +328,7 @@ async function handleSendMessage(
     };
     sendJson(ack);
   } else {
-    log?.info({ messageId, from: fromId, to: msg.to, status: 'queued' }, 'message sent');
+    log?.info({ messageId, from: resolvedFromId, to: resolvedToId, status: 'queued' }, 'message sent');
     const ack: WsMessageAck = {
       type: 'message_ack',
       messageId,
@@ -313,10 +350,22 @@ async function handleSyncRequest(
     .where(and(eq(messages.toId, agentId), eq(messages.delivered, false)))
     .orderBy(messages.createdAt);
 
+  // Resolve UUIDs to handles for all unique agent IDs
+  const uniqueIds = new Set<string>();
+  for (const m of undelivered) {
+    uniqueIds.add(m.fromId);
+    uniqueIds.add(m.toId);
+  }
+  const handleMap = new Map<string, string>();
+  for (const uid of uniqueIds) {
+    const resolved = await resolveAgent(db, uid);
+    if (resolved) handleMap.set(uid, resolved.handle);
+  }
+
   const mapped: Message[] = undelivered.map((m) => ({
     id: m.id,
-    from: m.fromId,
-    to: m.toId,
+    from: handleMap.get(m.fromId) ?? m.fromId,
+    to: handleMap.get(m.toId) ?? m.toId,
     content: m.content,
     metadata: (m.metadata ?? {}) as Message['metadata'],
     timestamp: m.createdAt!.toISOString(),
