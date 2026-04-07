@@ -89,8 +89,6 @@ async function autoMigrate() {
     `;
     await sql`CREATE INDEX IF NOT EXISTS group_messages_group_created_idx ON group_messages(group_id, created_at)`;
     await sql`CREATE INDEX IF NOT EXISTS agents_status_idx ON agents(status)`;
-    // One-time cleanup: remove test agent created during deployment testing
-    await sql`DELETE FROM agents WHERE id = 'ef586e45-f247-4d37-968e-16bf0674bf3b'`;
     console.log('Database schema initialized');
   } finally {
     await sql.end();
